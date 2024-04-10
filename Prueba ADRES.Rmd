@@ -1,0 +1,625 @@
+---
+title: "Prueba ADRES"
+author: "Juan Carlos Martínez Argüello"
+date: "2024-04-04"
+output:
+  html_document: default
+---
+
+## 1. Importar librerias
+
+```{r setup, echo=FALSE}
+require(pacman)
+pacman::p_load(dplyr,patchwork,tidyverse,ggplot2,magrittr,stargazer,RSQLite,DBI,glue,stringr,raster,sf,ggspatial,cowplot,forcats,factoextra, mlr3cluster,ClusterR,NbClust,plyr,doBy)
+```
+
+Agrega el directorio:
+
+```{r}
+dir<-"C:/Users/juank/Documents/Pruebas/ADRES"
+setwd(dir)
+```
+
+# Base de datos
+
+## 2. Creación de la base de datos
+
+Se cargan las dos bases municipios y *prestadores.*
+
+```{r }
+mun<-read.csv(glue("{dir}/Municipios.csv"),sep = ';', encoding = "UTF-8")
+pre<-read.csv(glue("{dir}/Prestadores.csv"),sep = ';', encoding = "UTF-8")
+```
+
+Corregir los nombres de municipios y departamentos en las bases anteriores se realiza en DB Browser con el siguiente comando:
+
+`CREATE VIEW munici as SELECT replace(replace(replace(replace(replace(replace(replace(muni_nombre,'<cd>','I'),'<d1>','N'),'<c1>','A'),'<d3>','O'),'<da>','U'),'<c9>','E'),'<dc>','U') Dep FROM Prestadores;`
+
+y
+
+`CREATE VIEW depr as SELECT replace(replace(replace(replace(replace(depa_nombre,'<f1>','N'),'<e1>','A'),'<f3>','O'),'<e9>','E'),'<ed>','I') Dep FROM Prestadores;`
+
+Y se extrae a CSV:
+
+```{r}
+mun_n<-read.csv(glue("{dir}/NAME_mun.csv"),sep = ';', encoding = "UTF-8")
+dep_n<-read.csv(glue("{dir}/dep_name.csv"),sep = ';', encoding = "UTF-8")
+
+```
+
+Y se remplaza en la base inicial:
+
+```{r}
+pre$muni_nombre<-mun_n$Dep
+pre$depa_nombre<-dep_n$Dep
+```
+
+```{r}
+pre$muni_nombre<-stringr::str_to_title(pre$muni_nombre)
+pre$depa_nombre<-stringr::str_to_title(pre$depa_nombre)
+```
+
+Remplazar algunos nombres:
+
+```{r}
+pre$depa_nombre[pre$depa_nombre=='Narino']='Nariño'
+pre$depa_nombre[pre$depa_nombre=='Norte De Santander']='N. De Santander'
+pre$depa_nombre[pre$depa_nombre=='Bogota D.c']='Bogota'
+pre$muni_nombre[pre$muni_nombre=='Bogota D.c']='Bogota'
+pre$muni_nombre[pre$muni_nombre=='Narino']='Nariño'
+pre$muni_nombre[pre$muni_nombre=='El Carmen De Bolivar']='Carmen De Bolivar'
+pre$muni_nombre[pre$muni_nombre=='Curillo']='Currillo'
+pre$muni_nombre[pre$muni_nombre=='El Canton Del San Pablo']='Canton De San Pablo'
+pre$muni_nombre[pre$muni_nombre=='Cubarral']='San Luis De Cubarral'
+pre$muni_nombre[pre$muni_nombre=='Guadalajara De Buga']='Buga'
+pre$muni_nombre[pre$muni_nombre=='San Carlos De Guaroa']='San Carlos Guaroa'
+pre$muni_nombre[pre$muni_nombre=='San Juan De Betulia']='San Juan Betulia'
+pre$muni_nombre[pre$muni_nombre=='Leguizamo']='Puerto Leguizamo'
+pre$muni_nombre[pre$muni_nombre=='El Canton Del San Pablo']='Canton De San Pablo'
+pre$muni_nombre[pre$muni_nombre=='Curillo']='Currillo'
+pre$muni_nombre[pre$muni_nombre=='San Pablo De Borbur']='San Pablo Borbur'
+pre$muni_nombre[pre$muni_nombre=='El Carmen De Bolivar']='Carmen De Bolivar'
+pre$muni_nombre[pre$muni_nombre=='El Carmen De Viboral']='Carmen De Viboral'
+pre$muni_nombre[pre$muni_nombre=='El Santuario' & pre$depa_nombre=='Antioquia']='Santuario'
+pre$muni_nombre[pre$muni_nombre=='Vistahermosa' & pre$depa_nombre=='Meta']='Vista Hermosa'
+pre$muni_nombre[pre$muni_nombre=='Puebloviejo']='Pueblo Viejo'
+pre$muni_nombre[pre$muni_nombre=='San Antonio Del Tequendama']='San Antonio De Tequendama'
+pre$muni_nombre[pre$muni_nombre=='Villa De San Diego De Ubate']='Ubate'
+pre$muni_nombre[pre$muni_nombre=='Cubarral']='San Luis De Cubarral'
+pre$muni_nombre[pre$muni_nombre=='Santa Rosa De Viterbo']='San Rosa Viterbo'
+```
+
+Por otro lado desde el DANE se descargan los codigos y nombres de los departamentos y municipios para contrarrestar la perdida de letras en la base Municipios.:
+
+1.  Cdep: Tiene dos variables: *Codigo* y *Dep.*
+
+2.  Cmun: Tiene cuatro variables
+
+```{r}
+Cmun<-read.csv(glue("{dir}/Cod_mun.csv"),sep = ',',encoding ='utf-8')
+Cdep<-read.csv(glue("{dir}/Cod_dep.csv"),sep = ',',encoding ='utf-8')
+
+colnames(Cmun)=c('Cmun','Municipio','Cdep')
+colnames(Cdep)=c('Cdep','Departamento')
+```
+
+Crea la base de datos:
+
+```{r}
+adres<-dbConnect(SQLite(),glue('{dir}/Adres.db'))
+```
+
+Crean las tablas dentro de la base *adres*
+
+```{r}
+dbWriteTable(adres,name = 'Municipios',value = mun)
+dbWriteTable(adres,name = 'Prestadores',value =  pre,append= TRUE)
+dbWriteTable(adres,name = 'Cmun',value =  Cmun,append= TRUE)
+dbWriteTable(adres,name = 'Cdep',value =  Cdep,append=TRUE)
+```
+
+Dado que ya se tiene las tablas con los codigos y los nombres, de la tabla *Municipios* se borra los nombres de los municipios y departamentos
+
+```{r}
+dbExecute(adres,statement = 'ALTER TABLE Municipios DROP COLUMN Departamento;
+')
+dbExecute(adres,statement = 'ALTER TABLE Municipios DROP COLUMN Municipio;
+')
+```
+
+```{r, echo=FALSE}
+
+dbExecute(adres,statement = 'CREATE TABLE PP AS SELECT * FROM Prestadores  LEFT JOIN Cdep on Prestadores.depa_nombre=Cdep.Departamento;')
+
+dbExecute(adres,'ALTER TABLE PP DROP COLUMN Departamento;')
+dbExecute(adres,'CREATE TABLE PP1 AS SELECT * FROM PP  LEFT JOIN Cmun on PP.muni_nombre=Cmun.Municipio AND PP.Cdep=Cmun.Cdep;')
+dbExecute(adres,'ALTER TABLE PP1 DROP COLUMN Municipio;')
+dbExecute(adres,"ALTER TABLE PP1 DROP COLUMN 'Cdep:1';")
+
+depa<-dbGetQuery(adres,'SELECT * FROM PP1 WHERE Cdep is NULL GROUP BY depa_nombre;')
+```
+
+Hay departamentos en la tabla *Prestadores* que son sus capitales:
+
+```{r}
+DEP<-c()
+for (i in depa$depa_nombre){DEP<-c(DEP,i)}
+print(DEP)
+```
+
+Encontramos el departamento que pertenece:
+
+```{r}
+cdepa<-c()
+cod<-c()
+MUN<-c()
+for (i in DEP){x=Cmun$Cdep[Cmun$Municipio==i]
+               cdepa<-c(cdepa,Cdep$Departamento[Cdep$Cdep==x])
+               cod<-c(cod,x)
+               MUN<-c(MUN,Cmun$Cmun[Cmun$Municipio==i])}
+print(cdepa)
+```
+
+Renombramos los departamentos en la tabla PP1 creada anteriormente:
+
+```{r}
+for (i in 1:length(MUN)){
+  dbExecute(adres,glue("UPDATE PP1 SET depa_nombre='{cdepa[i]}' WHERE depa_nombre='{DEP[i]}' AND muni_nombre='{DEP[i]}'"))
+  dbExecute(adres,glue("UPDATE PP1 SET Cdep={cod[i]} WHERE depa_nombre='{cdepa[i]}' AND muni_nombre='{DEP[i]}'"))
+  dbExecute(adres,glue("UPDATE PP1 SET Cmun={MUN[i]} WHERE depa_nombre='{cdepa[i]}' AND muni_nombre='{DEP[i]}'"))
+}
+```
+
+Se renombra *PP1* por *Prestadores* y se eliminan *PP1* y *PP*.
+
+```{r}
+dbExecute(adres,'DROP TABLE Prestadores')
+dbExecute(adres,'DROP TABLE PP')
+dbExecute(adres,'ALTER TABLE PP1 RENAME TO Prestadores')
+
+
+```
+
+Las tablas de la base de datos son:
+
+```{r}
+dbListTables(adres)
+```
+
+Incluyendo el codigo del municipio de aquellos que no tiene:
+
+```{r}
+con<-c("UPDATE Prestadores SET Cmun=13683 WHERE muni_nombre='Santa Rosa' AND depa_nombre='Bolivar';","UPDATE Prestadores SET Cmun=19300 WHERE muni_nombre='Guachene';","UPDATE Prestadores SET Cmun=27361 WHERE muni_nombre='Istmina';","UPDATE Prestadores SET Cmun=52699 WHERE muni_nombre='Santacruz';","UPDATE Prestadores SET Cmun=27361 WHERE muni_nombre='Istmina';","UPDATE Prestadores SET Cmun=86885 WHERE muni_nombre='Villagarzon';","UPDATE Prestadores SET Cmun=88564 WHERE muni_nombre='Providencia';")
+for (i in con){dbExecute(adres,i)}
+dbExecute(adres,'UPDATE Municipios SET Superficie=11938 WHERE Depmun=94663')
+```
+
+E insertar Guachené en la tabla *Municipios*
+
+```{r}
+dbExecute(adres,"INSERT into Municipios VALUES(19,19300,392.21,19815, ' ' ,'Regi<f3>n Pac<ed>fico')")
+```
+
+Corregimos la variable *naju_nombre* y *clpr_nombre* en Prestadores y *Region* en *Municipios:*
+
+```{r}
+dbExecute(adres,"UPDATE Prestadores SET naju_nombre = 'Publica' WHERE naju_codigo=4")
+dbExecute(adres,"UPDATE Prestadores SET clpr_nombre = 'Objeto Social Diferente a la Prestacion de Servicios de Salud' WHERE clpr_codigo=4")
+dbExecute(adres,"UPDATE Municipios SET Region = replace(replace(Region,'<f3>','o'),'<ed>','i')")
+```
+
+Esta lista la base de datos.
+
+## 3. Descripción de la base de datos
+
+La base adres esta compuesta por cuatro tablas:
+
+1.  Cdep: Incluye el codigo y el nombre de los 33 departamentos (Bogotá esta incluido)
+2.  Cmun: Incluye los municipios (1119) de colombia con su código y el código del departamento al que pertenece.
+3.  Prestadores: Incluye la misma base del problema pero con los codigos de los municipios y departamento para que sea mas facil ligarlas a la base Municipios (60946 observaciones).
+4.  Municipios: Incluye la misma base del problema pero no tiene el nombre del municipio y del departamento para mejorar la normalización (1119 observaciones).
+
+# Análisis
+
+## 4. Prestadores por departamento
+
+1.  Total de prestadores y por de prestadores: público, privado o mixto
+
+```{r}
+predep<-dbGetQuery(adres,"SELECT Departamento, 
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=1) Privada, 
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=4) Publica,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=3) Mixta,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep) Total
+FROM Cdep as C")
+```
+
+2.  Prestadores
+
+```{r}
+pre<-dbGetQuery(adres,'SELECT depa_nombre Departamento , naju_nombre Tipo FROM Prestadores')
+```
+
+Agrupa por departamento:
+
+```{r}
+predepT<- pre %>% group_by(Departamento,Tipo) %>% tally() %>% left_join(predep,by='Departamento')
+colnames(predepT)[3]='Prestadores'
+predepT$pub<-predepT$Publica/predepT$Total
+predepT$mix<-predepT$Mixta/predepT$Total
+predepT$per<-round((predepT$Total/sum(predep$Total))*100,1)
+predepT$y<-predepT$Total+500
+```
+
+3.  Graficar
+
+```{r}
+g1<-ggplot(predepT,aes(y=Prestadores,x=Departamento))
+g1<-g1+geom_bar(position = 'stack' ,stat='identity',alpha=.8,width=1,fill='cadetblue')+coord_flip()+labs(y='Cantidad',title = 'Gráfica 1\n(a) PSS por departamento',caption = 'Fuente: Datos de la prueba.')+ theme(panel.background = element_rect(fill = "white"))+theme(plot.title = element_text(size=15,face = 'bold',colour = 'navyblue',hjust =0),plot.caption = element_text(size=7,hjust =0),axis.text.y = element_text(size=6))+geom_text(aes(label=Total,y=y),size=1.8)
+
+g2<-ggplot(predepT,aes(y=Prestadores,x=Departamento,fill=Tipo))
+g2<-g2+geom_bar(position = 'fill' ,stat='identity',alpha=.8,width=1,color='grey')+coord_flip()+scale_fill_manual(values=c('azure4','cadetblue','royalblue4'))+labs(y='Porcentaje (%)',x='',title = '\n(b) Calsificación de los PSS por territorio')+ theme(panel.background = element_rect(fill = "white"))+theme(axis.text.y = element_text(size=6),plot.title = element_text(size=15,face = 'bold',colour = 'navyblue',hjust =0.5))
+
+g3<-plot_grid(g1,g2)
+ggsave(plot = g3,filename =  glue('{dir}/prestadores.png'),width = 30,
+  height = 10,
+  units = c("cm"))
+```
+
+Numero de prestadores en Colombia
+
+```{r}
+sum(predep$Total)
+```
+
+3.  Prestadores por razon social de entidad.
+
+```{r}
+tipo<-dbGetQuery(adres,'SELECT naju_nombre Tipo, count(naju_nombre) Prestadores FROM Prestadores GROUP BY naju_codigo')
+tipo$Porcentaje<-tipo$Prestadores/sum(tipo$Prestadores)
+```
+
+4.  Mayor cantidad de departamentos que tienen entidades públicas
+
+```{r}
+dbGetQuery(adres,'Select  depa_nombre Dep, count(naju_nombre) Prestadores FROM Prestadores WHERE naju_codigo=4 GROUP BY Cdep ORDER BY Prestadores DESC LIMIT 5')
+```
+
+5.  Mayor cantidad de departamentos que tienen entidades Mixtas
+
+```{r}
+dbGetQuery(adres,'Select  depa_nombre Dep, count(naju_nombre) Prestadores FROM Prestadores WHERE naju_codigo=3 GROUP BY Cdep ORDER BY Prestadores DESC LIMIT 5')
+```
+
+## 5. Mapa habitantes por PSS
+
+Cargan los shapes de los municipios:
+
+```{r}
+col<-st_read(glue('{dir}/shape/Col/Colombia.shp'))
+mun<-st_read(glue('{dir}/shape/municipios/Municipios.shp'))
+dep<-st_read(glue('{dir}/shape/departamentos/Depto.shp'))
+```
+
+Unir codigos de municipios y departamentos
+
+```{r}
+cod<-c()
+for (i in 1:dim(mun)[1]){
+  cd<-mun$DPTO_CCDGO[i]
+  cm<-mun$MPIO_CCDGO[i]
+  cod<-c(cod,as.numeric(paste0(cd,cm)))
+}
+mun$Cmun<-cod
+```
+
+Población y prestadores por municipio:
+
+```{r}
+poblacion<-dbGetQuery(adres,'SELECT Depmun Cmun, Poblacion FROM Municipios')
+prestadores<-dbGetQuery(adres,'SELECT Cmun, count(Cmun) Prestadores FROM Prestadores GROUP BY Cmun')
+```
+
+Unión entre población, prestadores y municipios (asumimos que si los municipios no tienen registros de prestadores este es 0)
+
+```{r}
+mun<-mun%>% left_join(.,poblacion,by=c('Cmun'='Cmun'))%>% left_join(.,prestadores,by=c('Cmun'='Cmun'))%>% mutate(PT=Poblacion/Prestadores)
+# %>% mutate_at(.,c('Prestadores'),~replace(.,is.na(.),0))
+```
+
+Separando San Andres y Providencia
+
+```{r}
+san<-mun %>% filter(DPTO_CCDGO==88)
+sin<-mun %>% filter(DPTO_CCDGO!=88)
+```
+
+Crea el mapa de Colombia sin San Andres
+
+```{r}
+m1<-ggplot()+geom_sf(data=sin,aes(fill=PT),color = NA)+geom_sf(data = dep,color='lightskyblue4',size=0.001,alpha=0)+geom_sf(data = col,color='black',size=0.5,alpha=0)+
+  scale_fill_gradientn('Personas',colours = hcl.colors(3, "GnBu", rev = TRUE),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+coord_sf(xlim = c(-80,-66))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = c(0.12,0.135),plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0.01),plot.caption = element_text(size=7,hjust =0),legend.key.size = unit(0.5,'cm'))+labs(caption = 'Nota: En gris aquellos municipios que no tienen prestadores',title = 'Mapa 2\n Habitantes por PSS a nivel municipal')
+
+m2<-ggplot()+geom_sf(data=san,aes(fill=PT),color ='black',size=0.1)+
+  scale_fill_gradientn(colours = hcl.colors(3, "GnBu", rev = TRUE),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"))+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = 'None',plot.title = element_text(size=7,face = 'bold'))
+
+map<-ggdraw()+draw_plot(m1)+
+  draw_plot(m2,x=0.1,y=0.65,width = 0.25,height = 0.25)
+
+ggsave(plot = map,filename =  glue('{dir}/Mapa.png'))
+```
+
+## 6. Por clase
+
+Obtenemos la clase y el tipo de prestadores:
+
+```{r}
+clas<-dbGetQuery(adres,'SELECT naju_nombre Tipo, clpr_codigo Clase From Prestadores')
+clas$Clase<-factor(clas$Clase,levels = c(1,2,3,4),labels = c('IPS','Profesional','Transporte','No_prestadores') )
+ptipo<-clas%>%count(.,c('Tipo','Clase'))%>% pivot_wider(.,names_from = Tipo,values_from = freq)%>%mutate_at(.,c('Mixta','Publica'),~replace(.,is.na(.),0))%>%mutate(Total=Mixta+Publica+Privada)%>%mutate(Mixta=Mixta/sum(Mixta))%>%mutate(Publica=Publica/sum(Publica))%>%mutate(Privada=Privada/sum(Privada))%>%mutate(Total=Total/sum(Total))
+ptipo
+```
+
+```{r}
+clas%>%count(.,c('Tipo','Clase'))%>% pivot_wider(.,names_from = Clase,values_from = freq)%>%mutate_at(.,c('Profesional'),~replace(.,is.na(.),0))%>%mutate(Total=IPS+Transporte+No_prestadores+Profesional)%>%mutate(IPS=IPS/sum(IPS))%>%mutate(Transporte=Transporte/sum(Transporte))%>%mutate(Profesional=Profesional/sum(Profesional))%>%mutate(Total=Total/sum(Total))%>%mutate(No_prestadores=No_prestadores/sum(No_prestadores))
+```
+
+## 7. Por nivel
+
+Se obtiene el nivel de las IPS públicas.
+
+```{r}
+N1<-dbGetQuery(adres,'SELECT Cmun,count() N1 FROM Prestadores WHERE nivel=1  GROUP BY Cmun')
+N2<-dbGetQuery(adres,'SELECT Cmun,count() N2 FROM Prestadores WHERE nivel=2  GROUP BY Cmun')
+N3<-dbGetQuery(adres,'SELECT Cmun,count() N3 FROM Prestadores WHERE nivel=3  GROUP BY Cmun')
+```
+
+Uniendo con el shape de municipios
+
+```{r}
+mun<-mun%>% left_join(.,N1,by=c('Cmun'='Cmun'))%>% left_join(.,N2,by=c('Cmun'='Cmun'))%>% left_join(.,N3,by=c('Cmun'='Cmun'))
+```
+
+Crea con y sin San Andres
+
+```{r}
+san<-mun %>% filter(DPTO_CCDGO==88)
+sin<-mun %>% filter(DPTO_CCDGO!=88)
+```
+
+```{r}
+m3<-ggplot()+geom_sf(data=sin,aes(fill=N1),color = NA)+geom_sf(data = dep,color='lightskyblue4',size=0.001,alpha=0)+geom_sf(data = col,color='black',size=0.5,alpha=0)+
+  scale_fill_gradientn('PSS',colours = hcl.colors(3, "Blues", rev = TRUE),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+coord_sf(xlim = c(-80,-66))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = c(0.12,0.135),plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0.1),plot.caption = element_text(size=7,hjust =0),legend.key.size = unit(0.15,'cm'))+labs(caption = 'Nota: En gris aquellos municipios que no tienen IPS\n de ese nivel',title = 'Mapa 1\n (a) PSS Nivel 1')
+
+m4<-ggplot()+geom_sf(data=sin,aes(fill=N2),color = NA)+geom_sf(data = dep,color='lightskyblue4',size=0.001,alpha=0)+geom_sf(data = col,color='black',size=0.5,alpha=0)+
+  scale_fill_gradientn('PSS',colours = hcl.colors(3, "Blues", rev = TRUE),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+coord_sf(xlim = c(-80,-66))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = c(0.12,0.135),plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0),plot.caption = element_text(size=7,hjust =0),legend.key.size = unit(0.15,'cm'))+labs(title = '\n (b) PSS Nivel 2')
+
+m5<-ggplot()+geom_sf(data=sin,aes(fill=N3),color = NA)+geom_sf(data = dep,color='lightskyblue4',size=0.001,alpha=0)+geom_sf(data = col,color='black',size=0.5,alpha=0)+
+  scale_fill_gradientn('PSS',colours = hcl.colors(3, "Blues", rev = TRUE),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+coord_sf(xlim = c(-80,-66))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = c(0.12,0.135),plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0),plot.caption = element_text(size=7,hjust =0),legend.key.size = unit(0.15,'cm'))+labs(title = '\n (c) PSS Nivel 3')
+
+m6<-m3+m4+m5
+
+ggsave(plot = m6,filename =  glue('{dir}/Mapa2.png'),width = 20,
+  height = 10,
+  units = c("cm"))
+```
+
+PSS públicos segun el nivel
+
+```{r}
+ppss<-dbGetQuery(adres,'SELECT count() FROM Prestadores WHERE naju_codigo=4')
+print(glue('Nivel 1:{sum(N1$N1)/ppss[1,1]} \n Nivel 2:{sum(N2$N2)/ppss[1,1]}\n Nivel 3: {sum(N3$N3)/ppss[1,1]}'))
+```
+
+Municipios por nivel
+
+```{r}
+print(glue('Municipios nivel 1: {(dim(N1)[1]/dim(mun)[1])*100} % \n Municipios nivel 2: {(dim(N2)[1]/dim(mun)[1])*100} % \n Municipios nivel 3: {(dim(N3)[1]/dim(mun)[1])*100} %'))
+```
+
+```{r}
+summary(mun$PT)
+```
+
+# Segmentación de municipios por prestadores
+
+Obtine los prestadores por razón social (pública, privada o mixta) a nivel departamental: predep
+
+```{r}
+predep<-dbGetQuery(adres,"SELECT Cdep, Departamento, 
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=1) Privada, 
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=4) Publica,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep AND P.naju_codigo=3) Mixta,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cdep=C.Cdep) Total
+FROM Cdep as C")
+```
+
+Obttiene los habitantes y superficies por departamento:
+
+```{r}
+dcaraac<-dbGetQuery(adres,'SELECT Dep Cdep, sum(Superficie) Superficie,sum(Poblacion) Poblacion FROM Municipios GROUP BY Dep')
+```
+
+Une caraac y predep:
+
+```{r}
+depp<-dcaraac %>% left_join(.,predep,by=c('Cdep'='Cdep')) %>% 
+  mutate(Superficie=as.numeric(str_replace(Superficie,',','.')))%>%mutate(PT=Poblacion/Total)%>%mutate(PT=Poblacion/Total)%>%mutate_at(.,c('Privada','Publica','Mixta','Total','PT'),~replace(.,is.na(.),0))
+
+row.names(depp)=depp$Departamento
+depp<-depp[,c(1,2,3,5,6,7,8,9)]
+```
+
+Escala y se obtiene la matriz de distancia:
+
+```{r}
+depp_s<-scale(depp[,2:dim(depp)[2]])
+depp_d<-get_dist(depp_s)
+fviz_dist(depp_d,gradient = list(low='white',mid='lightslateblue',high='magenta4'))
+```
+
+Teniendo en cuenta la población, la superficie y los PSS, los departamentos de Antioquia y Bogotá muestran una alta relación con los otros departamentos. Además, hay otros departamentos que sí tienen una relación no tan alta que son los de color magenta difuminados. Pero muchos departamentos tienen un grado de similitud medio. Por ende se puede realizar una segmentación por tipo de municipio con respecto a la población, terreno y PSS a nivel municipal.
+
+Obtine los prestadores por razón social (pública, privada o mixta)
+
+```{r}
+premun<-dbGetQuery(adres,"SELECT Cmun, Municipio,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cmun=C.Cmun AND P.naju_codigo=1) Privada, 
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cmun=C.Cmun AND P.naju_codigo=4) Publica,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cmun=C.Cmun AND P.naju_codigo=3) Mixta,
+(SELECT count(naju_nombre)FROM Prestadores as P WHERE P.Cmun=C.Cmun) Total
+FROM Cmun as C")
+```
+
+Obttiene los habitantes y superficies:
+
+```{r}
+mcaraac<-dbGetQuery(adres,'SELECT Depmun Cmun, Superficie,Poblacion FROM Municipios')
+```
+
+Unión
+
+```{r}
+data<- mcaraac %>% left_join(.,premun,by=c('Cmun'='Cmun')) %>% 
+  mutate(Superficie=as.numeric(str_replace(Superficie,',','.')))%>%mutate(PT=Poblacion/Total)%>%mutate(PT=Poblacion/Total)%>%mutate_at(.,c('Privada','Publica','Mixta','Total','PT'),~replace(.,is.na(.),0))
+data$PT<-replace(data$PT,data$PT==Inf,0)
+row.names(data)=data$Cmun
+data<-data[,c(2,3,5,6,7,8,9)]
+```
+
+Escalar y encontrar la matriz de distancias:
+
+```{r}
+data_Scale<-scale(data)
+ddata<-get_dist(data_Scale,method = 'euclidean')
+```
+
+Calcular cluster óptimos
+
+```{r}
+fviz_nbclust(data_Scale,kmeans,method = 'wss')
+```
+
+Despues del cluster 2 este decrese lentamente por lo cual el cluster optimo que segmentara los datos es 2, 3 o 4.
+
+### clusters
+
+```{r}
+km2<-kmeans(data_Scale,centers = 2,nstart = 100)
+km3<-kmeans(data_Scale,centers = 3,nstart = 100)
+km4<-kmeans(data_Scale,centers = 4,nstart = 100)
+```
+
+```{r}
+c2<-fviz_cluster(list(data=data_Scale,cluster=km2$cluster))+ggtitle('Cluster: 2')
+c3<-fviz_cluster(list(data=data_Scale,cluster=km3$cluster))+ggtitle('Cluster: 3')
+c4<-fviz_cluster(list(data=data_Scale,cluster=km4$cluster))+ggtitle('Cluster: 4')
+
+plot_grid(c2,c3,c4)
+
+```
+
+Tener 2 y 3 cluster realizados se puede ver que a medida el primer clúster de ambos son aquellos que tienen más PSS privadas, públicas y mixtas, a pesar de que su superficie no sea la más grande, los demás clúster van disminuyendo la cantidad de PSS. Lo más interesante es que a medida que aumentan los cluster las PSS les corresponden atender a más personas.
+
+```{r}
+print(glue('k=2: {(km2$betweenss/km2$totss)*100}'))
+print(glue('k=3: {(km3$betweenss/km3$totss)*100}'))
+print(glue('k=4: {(km4$betweenss/km4$totss)*100}'))
+```
+
+Según las medidas tener 4 cluster aumenta la varianza explicada de los datos con respecto a los cluster.
+
+```{r}
+dta<-as.data.frame(data_Scale)%>%mutate(k2=km2$cluster)%>%mutate(k3=km3$cluster)%>%mutate(k4=km4$cluster)
+k2<-dta[,1:8]%>%mutate(k2=as.factor(k2))
+k3<-dta[,c(1:7,9)]%>%mutate(k3=as.factor(k3))
+k4<-dta[,c(1:7,10)]%>%mutate(k4=as.factor(k4))
+
+k2<-gather(k2,caract,valor,1:7,factor_key = TRUE)
+k3<-gather(k3,caract,valor,1:7,factor_key = TRUE)
+k4<-gather(k4,caract,valor,1:7,factor_key = TRUE)
+
+g1<-ggplot(k2,aes(as.factor(x=caract),y=valor,group=k2,colour=k2))+stat_summary(fun = mean,geom = 'pointrange',size=1)+stat_summary(geom = 'line')+geom_point(aes(shape=k2))
+
+g2<-ggplot(k3,aes(as.factor(x=caract),y=valor,group=k3,colour=k3))+stat_summary(fun = mean,geom = 'pointrange',size=1)+stat_summary(geom = 'line')+geom_point(aes(shape=k3))
+
+g3<-ggplot(k4,aes(as.factor(x=caract),y=valor,group=k4,colour=k4))+stat_summary(fun = mean,geom = 'pointrange',size=1)+stat_summary(geom = 'line')+geom_point(aes(shape=k4))
+
+plot_grid(g1,g2,g3,ncol = 1,nrow=3)
+```
+
+Todos los cluster analizados, todos tienen en cuenta la cantidad de población y PSS. Altener 4 grupos se puede explicar más varianza y a la vez tener un factor que es el de la superficie, ya que uno de los custer tiene mayor superficie pero menos PSS y más personas por PSS. Por ende se trabaja con 4 grupos.
+
+```{r}
+data$Cmun<-as.numeric(row.names(data))
+row.names(data)<-c(1:dim(data)[1])
+data$k2<-km2$cluster
+data$k3<-km3$cluster
+data$k4<-km4$cluster
+
+write.csv(data,glue('{dir}/Data_kuster.csv'))
+
+data<-read.csv(glue('{dir}/Data_kuster.csv'))[,2:13]
+
+```
+
+```{r}
+data%>%group_by(k4)%>%summarise_at(.,c(1:7),'mean')
+```
+
+Reordenando los clusters:
+
+```{r}
+cc<-c()
+for (i in data$k4){
+  if (i==1){cc<-c(cc,i)}
+  if (i==2){cc<-c(cc,3)}
+  if (i==3){cc<-c(cc,4)}
+  if (i==4){cc<-c(cc,2)}
+}
+data$k4<-as.factor(cc)
+
+```
+
+Une con el shape de municipio *mun:*
+
+```{r}
+kmun<-mun%>%left_join(.,data,by=c('Cmun'='Cmun'))%>% mutate(cluster=as.factor(cluster))
+san<-kmun %>% filter(DPTO_CCDGO==88)
+sin<-kmun %>% filter(DPTO_CCDGO!=88)
+```
+
+Grafico
+
+```{r}
+m1<-ggplot()+geom_sf(data=sin,aes(fill=k4),color = NA)+geom_sf(data = dep,color='lightskyblue4',size=0.001,alpha=0)+geom_sf(data = col,color='black',size=0.5,alpha=0)+scale_fill_manual('Nivel',values=c('#EDEF5C','#94D268','#5DBE75','#41B47A'),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+coord_sf(xlim = c(-80,-66))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = c(0.12,0.15),plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0),plot.caption = element_text(size=7,hjust =0),legend.key.size = unit(0.13,'cm'))+labs(caption = 'Nota: En blanco aquellos municipios que no tienen \n información.',title = 'Mapa 3\nNivel del municipio por PSS')
+
+m2<-ggplot()+geom_sf(data=san,aes(fill=k4),color ='#EDEF5C',size=0.01)+
+  scale_fill_manual('Nivel',values=c('#EDEF5C','#94D268','#5DBE75','#41B47A'),na.value = 'azure4')+theme(panel.background = element_rect(fill = "white"),panel.border = element_rect(color = 'black', fill = NA, size = 1))+theme(axis.text.y = element_blank(),axis.text.x = element_blank(),legend.position = 'None',plot.title = element_text(size=7,face = 'bold'))
+
+gg<-ggdraw()+draw_plot(m1)+
+  draw_plot(m2,x=0.25,y=0.62,width = 0.2,height = 0.23)
+```
+
+Por caracteristicas:
+
+```{r}
+k4<-dta[,c(1:7,10)]%>%mutate(k4=as.factor(data$k4))
+
+colnames(k4)[7]='Hab/PSS'
+
+k4<-gather(k4,caract,valor,1:7,factor_key = TRUE)
+
+g3<-ggplot(k4,aes(as.factor(x=caract),y=valor,group=k4,colour=k4))+stat_summary(fun = mean,geom = 'pointrange',size=1)+stat_summary(geom = 'line')+geom_point(aes(shape=k4))+scale_color_manual(c('Nivel','Municipios'),values=c('#EDEF5C','#94D268','#5DBE75','#00887F'),na.value = 'azure4')+theme_bw()+labs(x='Caracteristica',y='Valor',title = 'Gráfica 2 \n Caracteristicas por nivel')+theme(plot.title = element_text(size=13,face = 'bold',colour = 'navyblue',hjust =0))
+
+top<-plot_grid(gg,g3)
+
+ggsave(plot = top,filename =  glue('{dir}/Mapa3.png'),width = 30,
+  height = 10,
+  units = c("cm"))
+
+```
+
+```{r}
+dim(kmun[kmun$k4==4,])[1]/dim(kmun)[1]
+```

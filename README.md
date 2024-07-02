@@ -1,8 +1,7 @@
-# Prueba_ADRESS
+# Prueba ATENEA
 
 En este ropositorio encontrara:
 
-1. El documento word de la descripción de los resultados.
-2. El script de R (markdown)
-3. Las bases con la que se construyo la base principal de SQL
-4. Video 
+1. Caracterizacion_IES: Script que se uso para la caracterización
+2. multiproposito: Script que se uso para la encuesta multiproposito 2021
+   
